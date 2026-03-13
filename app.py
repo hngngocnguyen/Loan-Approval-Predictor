@@ -28,6 +28,22 @@ CLEAN_DATA_PATH = DATA_DIR / "loan_data_clean.csv"
 MODELS_DIR = BASE_DIR / "models"
 APP_VERSION = "1.2.0"
 
+MAX_UPLOAD_SIZE_BYTES = 5 * 1024 * 1024
+MAX_APPLICANT_INCOME = 1_000_000.0
+MAX_COAPPLICANT_INCOME = 1_000_000.0
+MAX_LOAN_AMOUNT = 10_000.0
+MIN_LOAN_TERM = 12
+MAX_LOAN_TERM = 480
+
+EXPECTED_UPLOAD_COLUMNS = {
+    "ApplicantIncome",
+    "CoapplicantIncome",
+    "LoanAmount",
+    "Loan_Amount_Term",
+    "Loan_Status",
+    "Education",
+}
+
 MODEL_OPTIONS = {
     "Logistic Regression": "logistic_regression",
     "Random Forest": "random_forest",
@@ -69,6 +85,109 @@ def load_scaler():
 
 def parse_dependents(value: str) -> int:
     return 3 if value == "3+" else int(value)
+
+
+def sanitize_uploaded_data(
+    uploaded_file,
+) -> tuple[pd.DataFrame | None, list[str]]:
+    messages: list[str] = []
+
+    file_bytes = uploaded_file.getvalue()
+    if len(file_bytes) > MAX_UPLOAD_SIZE_BYTES:
+        messages.append(
+            "Fichier trop volumineux (> 5 MB). "
+            "Chargez un CSV plus petit."
+        )
+        return None, messages
+
+    try:
+        df = pd.read_csv(io.BytesIO(file_bytes))
+    except Exception:
+        messages.append("Impossible de lire le CSV (format invalide).")
+        return None, messages
+
+    if df.empty:
+        messages.append("Le CSV est vide.")
+        return None, messages
+
+    df.columns = [str(col).strip() for col in df.columns]
+    matched = EXPECTED_UPLOAD_COLUMNS.intersection(df.columns)
+    if len(matched) == 0:
+        messages.append(
+            "Aucune colonne attendue détectée (ex: ApplicantIncome, "
+            "LoanAmount, Loan_Status)."
+        )
+        return None, messages
+
+    numeric_columns = [
+        "ApplicantIncome",
+        "CoapplicantIncome",
+        "LoanAmount",
+        "Loan_Amount_Term",
+    ]
+    for column in numeric_columns:
+        if column in df.columns:
+            df[column] = pd.to_numeric(df[column], errors="coerce")
+
+    object_columns = df.select_dtypes(include=["object", "string"]).columns
+    for column in object_columns:
+        sanitized = (
+            df[column]
+            .astype(str)
+            .str.replace(r"[\x00-\x1F\x7F]", "", regex=True)
+            .str.strip()
+        )
+        df[column] = sanitized.str.slice(0, 100)
+
+    return df, messages
+
+
+def validate_prediction_inputs(
+    raw_inputs: dict,
+) -> tuple[list[str], list[str]]:
+    errors: list[str] = []
+    warnings: list[str] = []
+
+    applicant_income = float(raw_inputs["ApplicantIncome"])
+    coapplicant_income = float(raw_inputs["CoapplicantIncome"])
+    loan_amount = float(raw_inputs["LoanAmount"])
+    loan_term = float(raw_inputs["Loan_Amount_Term"])
+
+    if applicant_income < 0 or applicant_income > MAX_APPLICANT_INCOME:
+        errors.append(
+            "Revenu demandeur hors bornes autorisées "
+            "(0 à 1 000 000)."
+        )
+    if coapplicant_income < 0 or coapplicant_income > MAX_COAPPLICANT_INCOME:
+        errors.append(
+            "Revenu co-demandeur hors bornes autorisées "
+            "(0 à 1 000 000)."
+        )
+    if loan_amount <= 0 or loan_amount > MAX_LOAN_AMOUNT:
+        errors.append("Montant du prêt hors bornes autorisées (1 à 10 000).")
+    if loan_term < MIN_LOAN_TERM or loan_term > MAX_LOAN_TERM:
+        errors.append("Durée du prêt hors bornes autorisées (12 à 480 mois).")
+
+    total_income = applicant_income + coapplicant_income
+    monthly_payment = loan_amount / loan_term if loan_term else 0
+
+    if applicant_income < 1000:
+        warnings.append("⚠️ Le revenu du demandeur semble très bas.")
+    if loan_amount > max(total_income, 1) * 100:
+        warnings.append(
+            "⚠️ Le montant du prêt est très élevé par rapport "
+            "au revenu mensuel total."
+        )
+    if monthly_payment > max(total_income, 1):
+        warnings.append(
+            "⚠️ La mensualité estimée dépasse le revenu mensuel total."
+        )
+    if loan_term < 60:
+        warnings.append(
+            "⚠️ Une durée très courte augmente fortement la mensualité."
+        )
+
+    return errors, warnings
 
 
 def build_features(raw_inputs: dict, feature_names: list[str]) -> pd.DataFrame:
@@ -497,8 +616,17 @@ with tab_exploration:
     )
     display_data = raw_data
     if uploaded_file is not None:
-        display_data = pd.read_csv(io.BytesIO(uploaded_file.getvalue()))
-        st.caption("Aperçu du fichier importé par l'utilisateur.")
+        uploaded_df, upload_messages = sanitize_uploaded_data(uploaded_file)
+        if uploaded_df is None:
+            for message in upload_messages:
+                st.error(message)
+            display_data = raw_data
+            st.caption("Fallback sur le dataset par défaut.")
+        else:
+            display_data = uploaded_df
+            for message in upload_messages:
+                st.warning(message)
+            st.caption("Aperçu du fichier importé par l'utilisateur.")
     else:
         st.caption(
             "Dataset par défaut chargé avec cache depuis data/loan_data.csv."
@@ -775,6 +903,7 @@ with tab_prediction:
             applicant_income = st.number_input(
                 "Revenu mensuel du demandeur",
                 min_value=0.0,
+                max_value=MAX_APPLICANT_INCOME,
                 value=case_defaults["ApplicantIncome"],
                 step=100.0,
                 help="Revenu principal mensuel en devise locale.",
@@ -782,6 +911,7 @@ with tab_prediction:
             coapplicant_income = st.number_input(
                 "Revenu mensuel du co-demandeur",
                 min_value=0.0,
+                max_value=MAX_COAPPLICANT_INCOME,
                 value=case_defaults["CoapplicantIncome"],
                 step=100.0,
                 help="Laisser 0 si aucun co-demandeur.",
@@ -789,14 +919,15 @@ with tab_prediction:
             loan_amount = st.number_input(
                 "Montant demandé",
                 min_value=1.0,
+                max_value=MAX_LOAN_AMOUNT,
                 value=case_defaults["LoanAmount"],
                 step=1.0,
                 help="Montant total du prêt demandé.",
             )
             loan_term = st.slider(
                 "Durée du prêt (mois)",
-                min_value=12,
-                max_value=480,
+                min_value=MIN_LOAN_TERM,
+                max_value=MAX_LOAN_TERM,
                 value=int(case_defaults["Loan_Amount_Term"]),
                 step=12,
                 help="Durée de remboursement en mois.",
@@ -854,31 +985,6 @@ with tab_prediction:
         submitted = st.form_submit_button("Prédire", use_container_width=True)
 
     if submitted:
-        warnings = []
-        total_income = applicant_income + coapplicant_income
-        monthly_payment = loan_amount / loan_term if loan_term else 0
-
-        if applicant_income < 1000:
-            warnings.append("⚠️ Le revenu du demandeur semble très bas.")
-        if loan_amount > max(total_income, 1) * 100:
-            warnings.append(
-                "⚠️ Le montant du prêt est très élevé par rapport "
-                "au revenu mensuel total."
-            )
-        if monthly_payment > max(total_income, 1):
-            warnings.append(
-                "⚠️ La mensualité estimée dépasse le revenu mensuel total."
-            )
-        if loan_term < 60:
-            warnings.append(
-                "⚠️ Une durée très courte augmente fortement la mensualité."
-            )
-
-        if warnings:
-            st.warning("Points d'attention détectés :")
-            for warning in warnings:
-                st.write(warning)
-
         raw_inputs = {
             "Gender": gender,
             "Married": married,
@@ -893,26 +999,37 @@ with tab_prediction:
             "Property_Area": property_area,
         }
 
-        try:
-            feature_frame = build_features(
-                raw_inputs, metadata["feature_names"]
-            )
-            prediction_result = predict_with_explanation(
-                selected_model_key,
-                feature_frame,
-            )
+        blocking_errors, warnings = validate_prediction_inputs(raw_inputs)
+        if blocking_errors:
+            st.error("Entrées invalides détectées:")
+            for error_text in blocking_errors:
+                st.write(f"- {error_text}")
+        if warnings:
+            st.warning("Points d'attention détectés :")
+            for warning in warnings:
+                st.write(warning)
 
-            st.session_state.last_prediction = {
-                "features": feature_frame,
-                **prediction_result,
-            }
+        if not blocking_errors:
+            try:
+                feature_frame = build_features(
+                    raw_inputs, metadata["feature_names"]
+                )
+                prediction_result = predict_with_explanation(
+                    selected_model_key,
+                    feature_frame,
+                )
 
-        except Exception as error:
-            st.error(f"❌ Erreur lors de la prédiction : {error}")
-            st.info(
-                "Vérifiez que toutes les données sont correctement "
-                "renseignées puis réessayez."
-            )
+                st.session_state.last_prediction = {
+                    "features": feature_frame,
+                    **prediction_result,
+                }
+
+            except Exception as error:
+                st.error(f"❌ Erreur lors de la prédiction : {error}")
+                st.info(
+                    "Vérifiez que toutes les données sont correctement "
+                    "renseignées puis réessayez."
+                )
 
     if st.session_state.last_prediction is not None:
         result = st.session_state.last_prediction
