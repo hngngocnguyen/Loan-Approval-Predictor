@@ -15,6 +15,14 @@ env/
 
 # Notebook artifacts
 .ipynb_checkpoints/
+*.ipynb
+
+# Course and local notes
+note.txt
+tp*.py
+
+# Exported documents
+*.pdf
 
 # OS / editor files
 .DS_Store
