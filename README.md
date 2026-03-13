@@ -112,9 +112,29 @@ Activation locale :
 
 ## Screenshots
 
-### Apercu du projet
+### 1. Page d'accueil et navigation
 
-![Apercu du dashboard](exploration_visualizations.png)
+![Header with title and tab navigation](screenshots/Header%20with%20title%20and%20tab%20navigation.png)
+
+### 2. Dashboard d'exploration
+
+![Exploration Tab](screenshots/Exploration%20Tab.png)
+
+### 3. Formulaire de prediction
+
+![Prediction Form](screenshots/Prediction%20Form.png)
+
+### 4. Resultat de la prediction
+
+![Prediction result](screenshots/Prediction%20result.png)
+
+### 5. Onglet Performance du modele
+
+![Performance tab](screenshots/Performance%20tab.png)
+
+### 6. Filtres de la sidebar
+
+![Sidebar filters](screenshots/Sidebar%20filters.png)
 
 ## Auteur
 
