@@ -1024,8 +1024,8 @@ with tab_prediction:
                     **prediction_result,
                 }
 
-            except Exception as error:
-                st.error(f"❌ Erreur lors de la prédiction : {error}")
+            except Exception:
+                st.error("❌ Erreur lors de la prédiction.")
                 st.info(
                     "Vérifiez que toutes les données sont correctement "
                     "renseignées puis réessayez."

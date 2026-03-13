@@ -80,6 +80,27 @@ Installation :
 - Le fichier .streamlit/secrets.toml est ignore par Git.
 - Si des secrets sont necessaires plus tard, ils doivent etre configures dans Streamlit Cloud et non commits dans le repository.
 
+## Securite
+
+Le projet inclut un scan automatique des secrets :
+
+- Localement via pre-commit (avant chaque commit)
+- En CI via GitHub Actions (a chaque push et pull request)
+
+Activation locale :
+
+1. Installer les dependances :
+
+   pip install -r requirements.txt
+
+2. Installer les hooks pre-commit :
+
+   pre-commit install
+
+3. Lancer un scan manuel complet :
+
+   pre-commit run --all-files
+
 ## Usage
 
 1. Ouvrir l'onglet Exploration pour analyser les donnees.
