@@ -411,9 +411,11 @@ selected_model_key = MODEL_OPTIONS[selected_model_label]
 if "decision_threshold" not in st.session_state:
     st.session_state.decision_threshold = 0.5
 if "pending_decision_threshold" in st.session_state:
-    st.session_state.decision_threshold = float(
+    applied_threshold = float(
         st.session_state.pop("pending_decision_threshold")
     )
+    st.session_state.decision_threshold = applied_threshold
+    st.session_state.threshold_toast_value = applied_threshold
 
 threshold = st.sidebar.slider(
     "Seuil de prédiction",
@@ -423,6 +425,13 @@ threshold = st.sidebar.slider(
     step=0.01,
     key="decision_threshold",
 )
+
+if "threshold_toast_value" in st.session_state:
+    st.toast(
+        "Seuil mis à jour à "
+        f"{st.session_state.pop('threshold_toast_value'):.2f}",
+        icon="✅",
+    )
 
 st.sidebar.markdown("---")
 st.sidebar.subheader("Filtres exploration")
@@ -984,6 +993,11 @@ with tab_performance:
         "🔎 Cette section affiche la qualité du modèle sélectionné "
         "sur un jeu de test holdout."
     )
+    st.markdown(
+        "**Lecture rapide:** Commencez par la synthèse exécutive, "
+        "puis regardez l'optimisation du seuil, la calibration et "
+        "l'équité pour valider la robustesse de la décision."
+    )
 
     feature_names = metadata["feature_names"]
     has_required_columns = set(feature_names + ["Loan_Status"]).issubset(
@@ -1044,6 +1058,32 @@ with tab_performance:
                     "seule classe est présente dans les données évaluées."
                 )
 
+            threshold_table = compute_threshold_table(y_true, y_proba)
+            best_f1_row = threshold_table.loc[
+                threshold_table["f1"].idxmax()
+            ]
+
+            st.subheader("🧭 Synthèse exécutive")
+            summary_col1, summary_col2, summary_col3, summary_col4 = (
+                st.columns(4)
+            )
+            summary_col1.metric("Performance globale", f"AUC {auc_value:.3f}")
+            summary_col2.metric("Qualité décision", f"F1 {f1:.1%}")
+            summary_col3.metric(
+                "Seuil actuel",
+                f"{threshold:.2f}",
+                delta=f"Reco F1 {float(best_f1_row['threshold']):.2f}",
+            )
+            summary_col4.metric(
+                "Taux d'approbation prédit",
+                f"{float(np.mean(y_pred)):.1%}",
+            )
+            st.caption(
+                "Interprétation: un AUC élevé indique une bonne capacité "
+                "de séparation, tandis que le F1 équilibre précision "
+                "et rappel."
+            )
+
             st.subheader("📊 Métriques de performance")
             st.caption(
                 f"Seuil de décision appliqué aux métriques : {threshold:.0%}"
@@ -1073,7 +1113,6 @@ with tab_performance:
                 )
 
             st.subheader("🎯 Optimisation du seuil")
-            threshold_table = compute_threshold_table(y_true, y_proba)
             tuning_col1, tuning_col2 = st.columns([2, 1])
 
             with tuning_col1:
@@ -1116,6 +1155,10 @@ with tab_performance:
                     yaxis_range=[0, 1],
                 )
                 st.plotly_chart(fig_tuning, use_container_width=True)
+                st.caption(
+                    "Interprétation: déplacez le seuil pour arbitrer entre "
+                    "rappel (détection) et précision (fiabilité)."
+                )
 
             with tuning_col2:
                 strategy = st.selectbox(
@@ -1230,6 +1273,10 @@ with tab_performance:
                     yaxis_range=[0, 1],
                 )
                 st.plotly_chart(fig_calib, use_container_width=True)
+                st.caption(
+                    "Interprétation: plus la courbe suit la diagonale, "
+                    "plus les probabilités sont fiables."
+                )
             else:
                 st.info(
                     "Pas assez de données pour construire la courbe "
@@ -1276,6 +1323,10 @@ with tab_performance:
                     barmode="group",
                 )
                 st.plotly_chart(fig_fairness, use_container_width=True)
+                st.caption(
+                    "Interprétation: des écarts importants entre groupes "
+                    "peuvent signaler un risque d'iniquité."
+                )
 
                 st.dataframe(
                     fairness_dim_df.assign(
