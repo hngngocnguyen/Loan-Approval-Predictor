@@ -9,6 +9,15 @@ Application Streamlit pour predire l'approbation de prets et explorer les donnee
 - Affichage de la probabilite et des facteurs influents
 - Onglet de performance du modele
 
+## Structure du projet
+
+- `app.py` : application Streamlit principale
+- `data/` : fichiers CSV utilises par l'application
+- `models/` : modeles et artefacts de preprocessing
+- `.streamlit/config.toml` : configuration visuelle Streamlit
+
+Tous les chargements utilisent des chemins relatifs compatibles avec GitHub et Streamlit Cloud.
+
 ## Lancer en local
 
 1. Installer les dependances:

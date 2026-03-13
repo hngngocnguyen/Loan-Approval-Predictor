@@ -1,6 +1,12 @@
 import streamlit as st
 import pandas as pd
 import joblib
+from pathlib import Path
+
+
+BASE_DIR = Path(__file__).resolve().parent
+DATA_DIR = BASE_DIR / "data"
+MODELS_DIR = BASE_DIR / "models"
 
 # Configuration de la page
 st.set_page_config(
@@ -13,15 +19,15 @@ st.set_page_config(
 # Fonction de chargement des données (cachée)
 @st.cache_data
 def load_data():
-    return pd.read_csv("loan_data_clean.csv")
+    return pd.read_csv(DATA_DIR / "loan_data_clean.csv")
 
 # Fonction de chargement du modèle (cachée)
 @st.cache_resource
 def load_model(model_name):
     if model_name == "Logistic Regression":
-        return joblib.load("logistic_regression.pkl")
+        return joblib.load(MODELS_DIR / "logistic_regression.pkl")
     else:
-        return joblib.load("random_forest.pkl")
+        return joblib.load(MODELS_DIR / "random_forest.pkl")
 
 # Sidebar
 st.sidebar.title("⚙️ Configuration")

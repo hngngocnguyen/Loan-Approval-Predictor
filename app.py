@@ -22,8 +22,9 @@ from sklearn.metrics import (
 
 
 BASE_DIR = Path(__file__).resolve().parent
-DATA_PATH = BASE_DIR / "loan_data.csv"
-CLEAN_DATA_PATH = BASE_DIR / "loan_data_clean.csv"
+DATA_DIR = BASE_DIR / "data"
+DATA_PATH = DATA_DIR / "loan_data.csv"
+CLEAN_DATA_PATH = DATA_DIR / "loan_data_clean.csv"
 MODELS_DIR = BASE_DIR / "models"
 APP_VERSION = "1.2.0"
 
@@ -252,6 +253,98 @@ def build_calibration_table(
     return table
 
 
+def build_fairness_input_frame(X_eval: pd.DataFrame) -> pd.DataFrame:
+    fairness_input = pd.DataFrame(index=X_eval.index)
+
+    if "Gender" in X_eval.columns:
+        fairness_input["Gender"] = np.where(
+            X_eval["Gender"] == 1,
+            "Male",
+            "Female",
+        )
+
+    if "Education" in X_eval.columns:
+        fairness_input["Education"] = np.where(
+            X_eval["Education"] == 1,
+            "Graduate",
+            "Not Graduate",
+        )
+
+    if "Married" in X_eval.columns:
+        fairness_input["Married"] = np.where(
+            X_eval["Married"] == 1,
+            "Yes",
+            "No",
+        )
+
+    if {
+        "Property_Area_Semiurban",
+        "Property_Area_Urban",
+    }.issubset(X_eval.columns):
+        fairness_input["Property_Area"] = np.select(
+            [
+                X_eval["Property_Area_Semiurban"] == 1,
+                X_eval["Property_Area_Urban"] == 1,
+            ],
+            ["Semiurban", "Urban"],
+            default="Rural",
+        )
+
+    return fairness_input
+
+
+def compute_group_fairness_table(
+    X_eval: pd.DataFrame,
+    y_true: np.ndarray,
+    y_pred: np.ndarray,
+) -> pd.DataFrame:
+    fairness_input = build_fairness_input_frame(X_eval)
+    if fairness_input.shape[1] == 0:
+        return pd.DataFrame()
+
+    eval_df = fairness_input.copy()
+    eval_df["y_true"] = y_true
+    eval_df["y_pred"] = y_pred
+    eval_df["error"] = (y_pred != y_true).astype(int)
+
+    rows = []
+    for dimension in fairness_input.columns:
+        for group_name, group_df in eval_df.groupby(dimension, dropna=False):
+            if len(group_df) == 0:
+                continue
+
+            negatives = (group_df["y_true"] == 0).sum()
+            positives = (group_df["y_true"] == 1).sum()
+
+            false_pos = (
+                (group_df["y_pred"] == 1) & (group_df["y_true"] == 0)
+            ).sum()
+            false_neg = (
+                (group_df["y_pred"] == 0) & (group_df["y_true"] == 1)
+            ).sum()
+
+            rows.append(
+                {
+                    "dimension": str(dimension),
+                    "group": str(group_name),
+                    "count": int(len(group_df)),
+                    "predicted_approval_rate": float(
+                        group_df["y_pred"].mean()
+                    ),
+                    "actual_approval_rate": float(group_df["y_true"].mean()),
+                    "error_rate": float(group_df["error"].mean()),
+                    "fpr": float(false_pos / negatives)
+                    if negatives > 0
+                    else np.nan,
+                    "fnr": float(false_neg / positives)
+                    if positives > 0
+                    else np.nan,
+                }
+            )
+
+    return pd.DataFrame(rows)
+
+
 def loan_status_to_binary(series: pd.Series) -> pd.Series:
     status = series.astype(str).str.strip().str.upper()
     approved_values = {"Y", "1", "APPROVED", "YES", "TRUE"}
@@ -315,12 +408,20 @@ selected_model_label = st.sidebar.selectbox(
 )
 selected_model_key = MODEL_OPTIONS[selected_model_label]
 
+if "decision_threshold" not in st.session_state:
+    st.session_state.decision_threshold = 0.5
+if "pending_decision_threshold" in st.session_state:
+    st.session_state.decision_threshold = float(
+        st.session_state.pop("pending_decision_threshold")
+    )
+
 threshold = st.sidebar.slider(
     "Seuil de prédiction",
     min_value=0.0,
     max_value=1.0,
-    value=0.5,
+    value=float(st.session_state.decision_threshold),
     step=0.01,
+    key="decision_threshold",
 )
 
 st.sidebar.markdown("---")
@@ -363,6 +464,13 @@ st.info(
     "💡 Utilisez la barre latérale pour choisir le modèle et ajuster "
     "le seuil de décision."
 )
+with st.expander("🚀 Mode d'emploi rapide (3 étapes)"):
+    st.write("1. Explorez les données pour comprendre le profil global.")
+    st.write("2. Simulez une demande dans l'onglet Prédiction.")
+    st.write(
+        "3. Analysez performance, calibration et équité dans l'onglet "
+        "Performance."
+    )
 
 tab_exploration, tab_prediction, tab_performance = st.tabs(
     [
@@ -384,7 +492,7 @@ with tab_exploration:
         st.caption("Aperçu du fichier importé par l'utilisateur.")
     else:
         st.caption(
-            "Dataset par défaut chargé avec cache depuis loan_data.csv."
+            "Dataset par défaut chargé avec cache depuis data/loan_data.csv."
         )
 
     filtered_data = display_data.copy()
@@ -602,6 +710,54 @@ with tab_prediction:
     )
     st.caption(f"Modèle actif : {selected_model_label}")
 
+    sample_cases = {
+        "Personnalisé": {
+            "ApplicantIncome": 5000.0,
+            "CoapplicantIncome": 1500.0,
+            "LoanAmount": 140.0,
+            "Loan_Amount_Term": 360,
+            "Credit_History": 1,
+            "Education": "Graduate",
+            "Married": "Yes",
+            "Gender": "Male",
+            "Dependents": "1",
+            "Self_Employed": "No",
+            "Property_Area": "Semiurban",
+        },
+        "Profil prudent": {
+            "ApplicantIncome": 6500.0,
+            "CoapplicantIncome": 2000.0,
+            "LoanAmount": 120.0,
+            "Loan_Amount_Term": 360,
+            "Credit_History": 1,
+            "Education": "Graduate",
+            "Married": "Yes",
+            "Gender": "Female",
+            "Dependents": "0",
+            "Self_Employed": "No",
+            "Property_Area": "Urban",
+        },
+        "Profil risqué": {
+            "ApplicantIncome": 1800.0,
+            "CoapplicantIncome": 0.0,
+            "LoanAmount": 220.0,
+            "Loan_Amount_Term": 120,
+            "Credit_History": 0,
+            "Education": "Not Graduate",
+            "Married": "No",
+            "Gender": "Male",
+            "Dependents": "3+",
+            "Self_Employed": "Yes",
+            "Property_Area": "Rural",
+        },
+    }
+    selected_case = st.selectbox(
+        "Cas d'exemple",
+        options=list(sample_cases.keys()),
+        help="Pré-remplit le formulaire avec un profil type.",
+    )
+    case_defaults = sample_cases[selected_case]
+
     with st.form("prediction_form"):
         form_col1, form_col2 = st.columns(2)
 
@@ -610,27 +766,31 @@ with tab_prediction:
             applicant_income = st.number_input(
                 "Revenu mensuel du demandeur",
                 min_value=0.0,
-                value=5000.0,
+                value=case_defaults["ApplicantIncome"],
                 step=100.0,
+                help="Revenu principal mensuel en devise locale.",
             )
             coapplicant_income = st.number_input(
                 "Revenu mensuel du co-demandeur",
                 min_value=0.0,
-                value=1500.0,
+                value=case_defaults["CoapplicantIncome"],
                 step=100.0,
+                help="Laisser 0 si aucun co-demandeur.",
             )
             loan_amount = st.number_input(
                 "Montant demandé",
                 min_value=1.0,
-                value=140.0,
+                value=case_defaults["LoanAmount"],
                 step=1.0,
+                help="Montant total du prêt demandé.",
             )
             loan_term = st.slider(
                 "Durée du prêt (mois)",
                 min_value=12,
                 max_value=480,
-                value=360,
+                value=int(case_defaults["Loan_Amount_Term"]),
                 step=12,
+                help="Durée de remboursement en mois.",
             )
 
         with form_col2:
@@ -639,21 +799,47 @@ with tab_prediction:
                 "Historique de crédit",
                 options=[1, 0],
                 format_func=lambda x: "Positif" if x == 1 else "Négatif",
+                index=0 if case_defaults["Credit_History"] == 1 else 1,
                 horizontal=True,
+                help="Positif = historique de remboursement satisfaisant.",
             )
             education = st.selectbox(
-                "Niveau d'éducation", ["Graduate", "Not Graduate"]
+                "Niveau d'éducation",
+                ["Graduate", "Not Graduate"],
+                index=["Graduate", "Not Graduate"].index(
+                    case_defaults["Education"]
+                ),
             )
-            married = st.selectbox("Statut marital", ["No", "Yes"])
-            gender = st.selectbox("Genre", ["Male", "Female"])
+            married = st.selectbox(
+                "Statut marital",
+                ["No", "Yes"],
+                index=["No", "Yes"].index(case_defaults["Married"]),
+            )
+            gender = st.selectbox(
+                "Genre",
+                ["Male", "Female"],
+                index=["Male", "Female"].index(case_defaults["Gender"]),
+            )
             dependents = st.selectbox(
-                "Nombre de personnes à charge", ["0", "1", "2", "3+"]
+                "Nombre de personnes à charge",
+                ["0", "1", "2", "3+"],
+                index=["0", "1", "2", "3+"].index(
+                    case_defaults["Dependents"]
+                ),
             )
             self_employed = st.selectbox(
-                "Travailleur indépendant", ["No", "Yes"]
+                "Travailleur indépendant",
+                ["No", "Yes"],
+                index=["No", "Yes"].index(
+                    case_defaults["Self_Employed"]
+                ),
             )
             property_area = st.selectbox(
-                "Zone du bien", ["Rural", "Semiurban", "Urban"]
+                "Zone du bien",
+                ["Rural", "Semiurban", "Urban"],
+                index=["Rural", "Semiurban", "Urban"].index(
+                    case_defaults["Property_Area"]
+                ),
             )
 
         submitted = st.form_submit_button("Prédire", use_container_width=True)
@@ -754,6 +940,28 @@ with tab_prediction:
         st.progress(result["proba_approved"])
         st.caption(f"Seuil appliqué dans la sidebar : {threshold:.0%}")
 
+        confidence_margin = abs(result["proba_approved"] - threshold)
+        if confidence_margin >= 0.25:
+            confidence_label = "Confiance élevée"
+        elif confidence_margin >= 0.10:
+            confidence_label = "Confiance moyenne"
+        else:
+            confidence_label = "Confiance faible"
+
+        st.subheader("🧾 Synthèse décisionnelle")
+        threshold_text = (
+            "Approved" if threshold_decision == 1 else "Rejected"
+        )
+        st.info(
+            f"Décision seuil: {threshold_text} | "
+            f"Probabilité d'approbation: {result['proba_approved']:.1%} | "
+            f"{confidence_label}"
+        )
+        st.caption(
+            "La confiance dépend de l'écart entre la probabilité "
+            "prédite et le seuil choisi."
+        )
+
         st.subheader("🔍 Explication")
         st.write(result["explanation_note"])
         fig_impact = px.bar(
@@ -785,7 +993,7 @@ with tab_performance:
     if not has_required_columns:
         st.error(
             "Les colonnes nécessaires à l'évaluation sont absentes "
-            "dans loan_data_clean.csv."
+            "dans data/loan_data_clean.csv."
         )
     else:
         train_size = metadata.get("train_size")
@@ -964,6 +1172,18 @@ with tab_performance:
                     "Recall attendu",
                     f"{float(best_row['recall']):.1%}",
                 )
+                recommended_threshold = round(
+                    float(best_row["threshold"]),
+                    2,
+                )
+                if st.button(
+                    "Appliquer le seuil recommande",
+                    use_container_width=True,
+                ):
+                    st.session_state.pending_decision_threshold = (
+                        recommended_threshold
+                    )
+                    st.rerun()
                 st.caption(
                     "Le seuil conseillé est calculé sur le holdout courant."
                 )
@@ -1014,6 +1234,105 @@ with tab_performance:
                 st.info(
                     "Pas assez de données pour construire la courbe "
                     "de calibration."
+                )
+
+            st.subheader("⚖️ Analyse d'équité par sous-groupes")
+            fairness_table = compute_group_fairness_table(
+                X_eval,
+                y_true,
+                y_pred,
+            )
+
+            if len(fairness_table) > 0:
+                fairness_dim = st.selectbox(
+                    "Dimension analysée",
+                    sorted(fairness_table["dimension"].unique().tolist()),
+                )
+                fairness_dim_df = fairness_table[
+                    fairness_table["dimension"] == fairness_dim
+                ].copy()
+
+                fig_fairness = go.Figure()
+                fig_fairness.add_trace(
+                    go.Bar(
+                        x=fairness_dim_df["group"],
+                        y=fairness_dim_df["predicted_approval_rate"],
+                        name="Taux approuvé (prédit)",
+                        marker_color="#1f77b4",
+                    )
+                )
+                fig_fairness.add_trace(
+                    go.Bar(
+                        x=fairness_dim_df["group"],
+                        y=fairness_dim_df["actual_approval_rate"],
+                        name="Taux approuvé (réel)",
+                        marker_color="#2ca02c",
+                    )
+                )
+                fig_fairness.update_layout(
+                    title=f"Comparaison par groupe: {fairness_dim}",
+                    yaxis_title="Taux",
+                    yaxis_range=[0, 1],
+                    barmode="group",
+                )
+                st.plotly_chart(fig_fairness, use_container_width=True)
+
+                st.dataframe(
+                    fairness_dim_df.assign(
+                        predicted_approval_rate=fairness_dim_df[
+                            "predicted_approval_rate"
+                        ].map(lambda x: f"{x:.1%}"),
+                        actual_approval_rate=fairness_dim_df[
+                            "actual_approval_rate"
+                        ].map(lambda x: f"{x:.1%}"),
+                        error_rate=fairness_dim_df["error_rate"].map(
+                            lambda x: f"{x:.1%}"
+                        ),
+                        fpr=fairness_dim_df["fpr"].map(
+                            lambda x: "-" if pd.isna(x) else f"{x:.1%}"
+                        ),
+                        fnr=fairness_dim_df["fnr"].map(
+                            lambda x: "-" if pd.isna(x) else f"{x:.1%}"
+                        ),
+                    ),
+                    width="stretch",
+                )
+
+                approval_gap = float(
+                    fairness_dim_df["predicted_approval_rate"].max()
+                    - fairness_dim_df["predicted_approval_rate"].min()
+                )
+                error_gap = float(
+                    fairness_dim_df["error_rate"].max()
+                    - fairness_dim_df["error_rate"].min()
+                )
+
+                gap_col1, gap_col2 = st.columns(2)
+                gap_col1.metric(
+                    "Ecart taux d'approbation",
+                    f"{approval_gap:.1%}",
+                )
+                gap_col2.metric("Ecart taux d'erreur", f"{error_gap:.1%}")
+
+                if approval_gap >= 0.15 or error_gap >= 0.10:
+                    st.warning(
+                        "Alerte équité: des écarts significatifs existent "
+                        "sur cette dimension."
+                    )
+                else:
+                    st.success(
+                        "Aucun écart majeur détecté avec les seuils "
+                        "d'alerte actuels."
+                    )
+
+                st.caption(
+                    "Seuils d'alerte: 15 points sur le taux d'approbation "
+                    "prédit ou 10 points sur le taux d'erreur."
+                )
+            else:
+                st.info(
+                    "Colonnes insuffisantes pour calculer l'analyse "
+                    "d'équité par groupe."
                 )
 
             viz_col1, viz_col2 = st.columns(2)
